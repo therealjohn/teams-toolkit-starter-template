@@ -1,0 +1,149 @@
+# yaml-language-server: $schema=https://aka.ms/teams-toolkit/1.0.0/yaml.schema.json
+#
+# The teamsapp.local.yml composes automation tasks for Teams Toolkit when running locally.
+# This file is used when running Start Debugging (F5) from Visual Studio Code or with the TeamsFx CLI commands.
+# i.e. `teamsfx provision --env local` or `teamsfx deploy --env local`.
+#
+# You can customize this file. Visit https://aka.ms/teamsfx-v5.0-guide for more info about Teams Toolkit project files.
+version: 1.0.0
+
+environmentFolderPath: ./env
+
+# Defines what the `provision` lifecycle step does with Teams Toolkit.
+# Runs first during Start Debugging (F5) or run manually using `teamsfx provision --env local`.
+provision:
+
+# Creates a new Azure Active Directory (AAD) app to authenticate users if
+  # the environment variable that stores clientId is empty
+  - uses: aadApp/create
+    with:
+      # Note: when you run aadApp/update, the AAD app name will be updated
+      # based on the definition in manifest. If you don't want to change the
+      # name, make sure the name in AAD manifest is the same with the name
+      # defined here.
+      name: TestReact
+      # If the value is false, the driver will not generate client secret for you
+      generateClientSecret: true
+      # Authenticate users with a Microsoft work or school account in your
+      # organization's Azure AD tenant (for example, single tenant).
+      signInAudience: AzureADMyOrg
+    # Write the information of created resources into environment file for the
+    # specified environment variable(s).
+    writeToEnvironmentFile:
+      clientId: AAD_APP_CLIENT_ID
+      # Environment variable that starts with `SECRET_` will be stored to the
+      # .env.{envName}.user environment file
+      clientSecret: SECRET_AAD_APP_CLIENT_SECRET
+      objectId: AAD_APP_OBJECT_ID
+      tenantId: AAD_APP_TENANT_ID
+      authority: AAD_APP_OAUTH_AUTHORITY
+      authorityHost: AAD_APP_OAUTH_AUTHORITY_HOST
+
+  # Automates the creation of a Teams app registration and saves the App ID to an environment file.
+  - uses: teamsApp/create
+    with:
+      name: EchoBot-${{TEAMSFX_ENV}}
+    writeToEnvironmentFile:
+      teamsAppId: TEAMS_APP_ID
+
+  # Set TAB_DOMAIN and TAB_ENDPOINT for local launch
+  - uses: script 
+    with:
+      run:
+        echo "::set-teamsfx-env TAB_DOMAIN=localhost:53000";
+        echo "::set-teamsfx-env TAB_ENDPOINT=https://localhost:53000";
+
+  # Automates the creation an Azure AD app registration which is required for a bot.
+  # The Bot ID (AAD app client ID) and Bot Password (AAD app client secret) are saved to an environment file.
+  - uses: botAadApp/create
+    with:
+      name: EchoBot-${{TEAMSFX_ENV}}
+    writeToEnvironmentFile:
+      botId: BOT_ID
+      botPassword: SECRET_BOT_PASSWORD
+
+  # Apply the AAD manifest to an existing AAD app. Will use the object id in
+  # manifest file to determine which AAD app to update.
+  - uses: aadApp/update
+    with:
+      # Relative path to this file. Environment variables in manifest will
+      # be replaced before apply to AAD app
+      manifestPath: ./aad.manifest.json
+      outputFilePath: ./build/aad.manifest.${{TEAMSFX_ENV}}.json
+
+  # Automates the creation and configuration of a Bot Framework registration which is required for a bot.
+  # This configures the bot to use the Azure AD app registration created in the previous step.
+  # Teams Toolkit automatically creates a local Dev Tunnel URL and updates BOT_ENDPOINT when debugging (F5).
+  - uses: botFramework/create
+    with:
+      botId: ${{BOT_ID}}
+      name: EchoBot
+      messagingEndpoint: ${{BOT_ENDPOINT}}/api/messages
+      description: ""
+      channels:
+        - name: msteams
+
+  # Optional: Automates schema and error checking of the Teams app manifest and outputs the results in the console.
+  - uses: teamsApp/validateManifest
+    with:
+      manifestPath: ./teamsAppManifest/manifest.json
+
+  # Automates the creation of a Teams app package (.zip).
+  - uses: teamsApp/zipAppPackage
+    with:
+      manifestPath: ./teamsAppManifest/manifest.json
+      outputZipPath: ./teamsAppManifest/build/appPackage.${{TEAMSFX_ENV}}.zip
+      outputJsonPath: ./teamsAppManifest/build/manifest.${{TEAMSFX_ENV}}.json
+
+  # Automates updating the Teams app manifest in Teams Developer Portal using the App ID from the mainfest file.
+  # This action ensures that any manifest changes are reflected when launching the app again in Teams.
+  - uses: teamsApp/update
+    with:
+      # Relative path to this file. This is the path for built zip file.
+      appPackagePath: ./teamsAppManifest/build/appPackage.${{TEAMSFX_ENV}}.zip
+
+  # Extend your Teams app to Outlook and the Microsoft 365 app
+  - uses: teamsApp/extendToM365
+    with:
+      # Relative path to the build app package.
+      appPackagePath: ./appPackage/build/appPackage.${{TEAMSFX_ENV}}.zip
+    # Write the information of created resources into environment file for
+    # the specified environment variable(s).
+    writeToEnvironmentFile:
+      titleId: M365_TITLE_ID
+      appId: M365_APP_ID
+
+# Defines what the `deploy` lifecycle step does with Teams Toolkit.
+# Runs after `provision` during Start Debugging (F5) or run manually using `teamsfx deploy --env local`.
+deploy:
+  # Install development tool(s)
+  - uses: devTool/install
+    with:
+      devCert:
+        trust: true
+    # Write the information of installed development tool(s) into environment
+    # file for the specified environment variable(s).
+    writeToEnvironmentFile:
+      sslCertFile: SSL_CRT_FILE
+      sslKeyFile: SSL_KEY_FILE
+
+  # Ensures that the project dependnecies are installed.
+  - uses: cli/runNpmCommand
+    with:
+      args: install --no-audit
+
+  # Provides the Teams Toolkit .env file values to the apps runtime so they can be accessed with `process.env`.
+  # See package.json for how this is used for development in the `dev:teamsfx` script.
+  - uses: file/createOrUpdateEnvironmentFile
+    with:
+      target: ./.localConfigs
+      envs:
+        BROWSER: none
+        HTTPS: true
+        PORT: 53000
+        SSL_CRT_FILE: ${{SSL_CRT_FILE}}
+        SSL_KEY_FILE: ${{SSL_KEY_FILE}}
+        REACT_APP_CLIENT_ID: ${{AAD_APP_CLIENT_ID}}
+        REACT_APP_START_LOGIN_PAGE_URL: ${{TAB_ENDPOINT}}/auth-start.html
+        BOT_ID: ${{BOT_ID}}
+        BOT_PASSWORD: ${{SECRET_BOT_PASSWORD}}
